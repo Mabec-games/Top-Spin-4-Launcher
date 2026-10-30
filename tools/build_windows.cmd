@@ -42,7 +42,9 @@ start "" /wait "dist\%NAME%\%APP%.exe" --self-test
 if errorlevel 1 (echo Self-test FAILED & exit /b 1)
 
 if exist "dist\%NAME%.zip" del "dist\%NAME%.zip"
-powershell -NoProfile -Command "Compress-Archive -Path 'dist\%NAME%' -DestinationPath 'dist\%NAME%.zip'" || exit /b 1
+rem Python's zipfile writes standard "/" entry names (Compress-Archive in
+rem Windows PowerShell 5 writes "\", which breaks unzip on other systems).
+python -c "import shutil; shutil.make_archive(r'dist\%NAME%', 'zip', 'dist', '%NAME%')" || exit /b 1
 powershell -NoProfile -Command "$h=(Get-FileHash 'dist\%NAME%.zip' -Algorithm SHA256).Hash.ToLower(); Set-Content -NoNewline -Path 'dist\%NAME%.zip.sha256' -Value ($h + '  %NAME%.zip' + [char]10)" || exit /b 1
 
 echo Built dist\%NAME%.zip
