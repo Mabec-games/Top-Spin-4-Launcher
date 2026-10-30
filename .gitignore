@@ -1,0 +1,21 @@
+# Player data and local state (profiles, saves, caches, settings, logs)
+/data/
+/settings.json
+*.log
+__pycache__/
+
+# Build output: launchers are not committed
+/build/
+/dist/
+
+# Xenia binaries are downloaded by the build (see .github/workflows)
+/xenia/
+*.AppImage
+*.appimage
+*.exe
+*.zip
+
+# Game images never belong in the repository
+*.iso
+*.xex
+*.zar

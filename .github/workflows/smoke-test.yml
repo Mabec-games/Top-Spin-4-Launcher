@@ -1,0 +1,101 @@
+name: Smoke test
+
+# Builds and checks the launcher. Nothing is uploaded: no artifacts, no releases.
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+env:
+  # Xenia Edge build bundled with the launcher (github.com/has207/xenia-edge).
+  EDGE_TAG: "1574493"
+  EDGE_WINDOWS_SHA256: 21b9907a0a6c8d446f953f344d85d323bd9e11a2afc9bd2ecb66cd6daee0b0cd
+
+jobs:
+  windows:
+    runs-on: windows-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Download Xenia Edge (pinned, SHA-256 checked)
+        shell: pwsh
+        run: |
+          $url = "https://github.com/has207/xenia-edge/releases/download/$env:EDGE_TAG/xenia_edge_windows.zip"
+          Invoke-WebRequest $url -OutFile edge.zip
+          $hash = (Get-FileHash edge.zip -Algorithm SHA256).Hash.ToLower()
+          if ($hash -ne $env:EDGE_WINDOWS_SHA256) { throw "xenia_edge_windows.zip hash mismatch: $hash" }
+          Expand-Archive edge.zip -DestinationPath edge_unzip
+          Get-ChildItem -Recurse edge_unzip | Format-Table FullName, Length -AutoSize
+          $exe = Get-ChildItem -Recurse edge_unzip -Filter xenia_edge.exe | Select-Object -First 1
+          if (-not $exe) { throw "xenia_edge.exe not found in the release zip" }
+          New-Item -ItemType Directory -Force xenia\windows | Out-Null
+          Copy-Item "$($exe.DirectoryName)\*" xenia\windows -Recurse
+
+      - name: Build launcher .exe
+        shell: cmd
+        run: call tools\build_windows.cmd
+
+      - name: Self-test
+        shell: pwsh
+        run: |
+          $exe = (Get-ChildItem dist -Filter *.exe | Select-Object -First 1).FullName
+          $p = Start-Process $exe -ArgumentList '--self-test', '--report', "`"$pwd\selftest.txt`"" -Wait -PassThru
+          Get-Content selftest.txt
+          if ($p.ExitCode -ne 0) { throw "self-test failed ($($p.ExitCode))" }
+          if (-not (Select-String selftest.txt -Pattern 'bundled xenia: .*xenia_edge\.exe')) {
+            throw "the .exe does not find its bundled Xenia Edge"
+          }
+
+      - name: GPU detection (Direct3D 12 and Vulkan)
+        shell: pwsh
+        run: |
+          $exe = (Get-ChildItem dist -Filter *.exe | Select-Object -First 1).FullName
+          Start-Process $exe -ArgumentList '--list-gpus', '"Direct3D 12"', "`"$pwd\d3d12.json`"" -Wait
+          "Direct3D 12 adapters: $(Get-Content d3d12.json)"
+          if (Test-Path d3d12.json.err) { Get-Content d3d12.json.err; throw "DXGI adapter enumeration raised an error" }
+          Start-Process $exe -ArgumentList '--list-gpus', 'Vulkan', "`"$pwd\vulkan.json`"" -Wait
+          "Vulkan devices: $(Get-Content vulkan.json)"
+          if (Test-Path vulkan.json.err) {
+            Get-Content vulkan.json.err
+            Write-Output "::warning::Vulkan is not available on this runner (no GPU driver); falls back to generic GPU names"
+          }
+
+      - name: Bundled Xenia Edge starts
+        shell: pwsh
+        run: |
+          $x = Start-Process xenia\windows\xenia_edge.exe -PassThru
+          Start-Sleep -Seconds 15
+          if (-not $x.HasExited) {
+            "xenia_edge.exe is running after 15 s"
+            Stop-Process $x -Force
+          } elseif ($x.ExitCode -eq -1073741515) {
+            throw "xenia_edge.exe could not start: a required DLL is missing (0xC0000135)"
+          } else {
+            Write-Output "::warning::xenia_edge.exe exited with $($x.ExitCode) (runners have no GPU)"
+          }
+
+  linux:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Python Tk
+        run: sudo apt-get update && sudo apt-get install -y python3-tk
+
+      - name: Compile, self-test and dry run
+        run: |
+          python3 -m py_compile topspin4_launcher.py tools/build_appimage.py tools/make_assets.py
+          python3 topspin4_launcher.py --version
+          python3 topspin4_launcher.py --self-test
+          touch "Top Spin 4.iso" xenia_edge_linux.appimage && chmod +x xenia_edge_linux.appimage
+          printf '{"iso": "%s/Top Spin 4.iso", "emulator_kind": "Xenia Edge"}' "$PWD" > settings.json
+          python3 topspin4_launcher.py --dry-run | tee dry-run.txt
+          grep -q -- '--guest_scheduler_spin_quanta=1' dry-run.txt
+          grep -q -- '--logged_profile_slot_0_xuid=' dry-run.txt
+          bash -n launcher.sh play.sh
