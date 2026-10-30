@@ -1,0 +1,95 @@
+name: Bug report
+description: Something doesn't work in the launcher or in the game
+labels: [bug]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for testing this early version! The more detail you include, the faster it can be fixed.
+        **Never attach game files (ISO/XEX) or links to them.**
+  - type: dropdown
+    id: platform
+    attributes:
+      label: Platform
+      options:
+        - Linux (AppImage)
+        - Windows (zip)
+        - Steam Deck (AppImage)
+        - Other
+    validations:
+      required: true
+  - type: input
+    id: version
+    attributes:
+      label: Launcher version
+      description: Shown in the launcher's title bar, e.g. 1.0
+    validations:
+      required: true
+  - type: input
+    id: system
+    attributes:
+      label: Operating system and version
+      placeholder: e.g. Windows 11 23H2, Ubuntu 24.04, SteamOS 3.6, CachyOS
+    validations:
+      required: true
+  - type: input
+    id: gpu
+    attributes:
+      label: GPU and driver version
+      placeholder: e.g. NVIDIA RTX 3080 Laptop, driver 615.78
+    validations:
+      required: true
+  - type: input
+    id: settings
+    attributes:
+      label: Launcher settings
+      description: Resolution, anti-aliasing, scaling, Graphics API (Windows), fullscreen or windowed
+      placeholder: e.g. 1440p (2x), FXAA, Bilinear, Direct3D 12, fullscreen
+  - type: dropdown
+    id: started
+    attributes:
+      label: How was it started?
+      options:
+        - Launcher window (PLAY button)
+        - From Steam (Add to Steam shortcut)
+        - Command line (--play)
+  - type: textarea
+    id: what
+    attributes:
+      label: What happened?
+      description: What you expected, what happened instead, and where in the game (title screen, after Press Start, menu, match, ...)
+    validations:
+      required: true
+  - type: textarea
+    id: steps
+    attributes:
+      label: Steps to reproduce
+      placeholder: |
+        1. Start the launcher
+        2. Choose ...
+        3. Press PLAY, then Start
+        4. ...
+    validations:
+      required: true
+  - type: dropdown
+    id: frequency
+    attributes:
+      label: How often does it happen?
+      options:
+        - Every time
+        - Sometimes
+        - Happened once
+  - type: textarea
+    id: log
+    attributes:
+      label: xenia.log
+      description: |
+        Drag and drop `xenia.log` from the launcher's folder (or use the launcher's "Open log" button).
+        It is overwritten on each start, so attach it right after the problem happens.
+    validations:
+      required: true
+  - type: textarea
+    id: extra
+    attributes:
+      label: Screenshots or anything else
+      description: Screenshots, videos, controller model, whether Steam was running, etc.

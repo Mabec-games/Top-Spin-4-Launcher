@@ -1,6 +1,7 @@
 name: Smoke test
 
-# Builds and checks the launcher. Nothing is uploaded: no artifacts, no releases.
+# Builds and checks the launcher. The tested Windows zip is kept as a workflow
+# artifact for 7 days so a release can use exactly that build.
 on:
   push:
   pull_request:
@@ -92,6 +93,16 @@ jobs:
           } else {
             Write-Output "::warning::xenia_edge.exe exited with $($x.ExitCode) (runners have no GPU)"
           }
+
+      - name: Keep the tested zip (7 days)
+        uses: actions/upload-artifact@v4
+        with:
+          name: windows-zip
+          path: |
+            dist/*.zip
+            dist/*.zip.sha256
+          retention-days: 7
+          if-no-files-found: error
 
   linux:
     runs-on: ubuntu-latest
