@@ -36,25 +36,39 @@ jobs:
           New-Item -ItemType Directory -Force xenia\windows | Out-Null
           Copy-Item "$($exe.DirectoryName)\*" xenia\windows -Recurse
 
-      - name: Build launcher .exe
+      - name: Build release zip
         shell: cmd
         run: call tools\build_windows.cmd
+
+      - name: Unpack the zip like a player would
+        shell: pwsh
+        run: |
+          $zip = Get-ChildItem dist -Filter *.zip | Select-Object -First 1
+          "Zip: $($zip.Name)  $([math]::Round($zip.Length / 1MB, 1)) MB"
+          Get-Content "$($zip.FullName).sha256"
+          Expand-Archive $zip.FullName -DestinationPath player
+          $app = (Get-ChildItem player -Recurse -Filter TopSpin4Launcher.exe | Select-Object -First 1).DirectoryName
+          foreach ($f in 'TopSpin4Launcher.exe', '_internal\xenia\xenia_edge.exe', 'licenses\XENIA_EDGE_LICENSE.txt', '_internal\assets\header.png') {
+            if (-not (Test-Path "$app\$f")) { throw "missing from zip: $f" }
+          }
+          Get-ChildItem $app | Format-Table Name, Length -AutoSize
+          "APP=$app" | Out-File -Append -Encoding utf8 $env:GITHUB_ENV
 
       - name: Self-test
         shell: pwsh
         run: |
-          $exe = (Get-ChildItem dist -Filter *.exe | Select-Object -First 1).FullName
-          $p = Start-Process $exe -ArgumentList '--self-test', '--report', "`"$pwd\selftest.txt`"" -Wait -PassThru
+          $p = Start-Process "$env:APP\TopSpin4Launcher.exe" -ArgumentList '--self-test', '--report', "`"$pwd\selftest.txt`"" -Wait -PassThru
           Get-Content selftest.txt
           if ($p.ExitCode -ne 0) { throw "self-test failed ($($p.ExitCode))" }
-          if (-not (Select-String selftest.txt -Pattern 'bundled xenia: .*xenia_edge\.exe')) {
-            throw "the .exe does not find its bundled Xenia Edge"
+          if (-not (Select-String selftest.txt -SimpleMatch -Pattern "bundled xenia: $env:APP\_internal\xenia\xenia_edge.exe")) {
+            throw "the launcher does not use the Xenia Edge inside its own folder"
           }
+          if (Test-Path "$env:APP\data") { throw "the self-test must not write a data folder" }
 
       - name: GPU detection (Direct3D 12 and Vulkan)
         shell: pwsh
         run: |
-          $exe = (Get-ChildItem dist -Filter *.exe | Select-Object -First 1).FullName
+          $exe = "$env:APP\TopSpin4Launcher.exe"
           Start-Process $exe -ArgumentList '--list-gpus', '"Direct3D 12"', "`"$pwd\d3d12.json`"" -Wait
           "Direct3D 12 adapters: $(Get-Content d3d12.json)"
           if (Test-Path d3d12.json.err) { Get-Content d3d12.json.err; throw "DXGI adapter enumeration raised an error" }
@@ -68,7 +82,7 @@ jobs:
       - name: Bundled Xenia Edge starts
         shell: pwsh
         run: |
-          $x = Start-Process xenia\windows\xenia_edge.exe -PassThru
+          $x = Start-Process "$env:APP\_internal\xenia\xenia_edge.exe" -PassThru
           Start-Sleep -Seconds 15
           if (-not $x.HasExited) {
             "xenia_edge.exe is running after 15 s"
