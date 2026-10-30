@@ -493,8 +493,8 @@ def _vulkan_gpu_names():
 
 
 def _dxgi_gpu_names():
-    """Hardware adapters in IDXGIFactory1::EnumAdapters1 order, which is the
-    index Xenia's d3d12_adapter uses. Windows only."""
+    """Adapters in IDXGIFactory1::EnumAdapters1 order, which is the index
+    Xenia's d3d12_adapter uses. Windows only."""
     import ctypes as C
     from ctypes import wintypes as W
 
@@ -525,8 +525,9 @@ def _dxgi_gpu_names():
         desc = Desc1()
         method(adapter, 10, C.POINTER(Desc1))(adapter, C.byref(desc))   # GetDesc1
         method(adapter, 2)(adapter)                                     # Release
-        if not desc.Flags & 2:                                          # skip software (WARP)
-            names.append(desc.Description)
+        # Keep every adapter: Xenia's d3d12_adapter is the raw EnumAdapters1
+        # index, software adapters (WARP) included.
+        names.append(desc.Description + (" (software)" if desc.Flags & 2 else ""))
         i += 1
     method(factory, 2)(factory)
     return names
