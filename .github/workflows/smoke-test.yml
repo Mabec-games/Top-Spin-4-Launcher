@@ -47,7 +47,8 @@ jobs:
           $zip = Get-ChildItem dist -Filter *.zip | Select-Object -First 1
           "Zip: $($zip.Name)  $([math]::Round($zip.Length / 1MB, 1)) MB"
           Get-Content "$($zip.FullName).sha256"
-          python -c "import sys, zipfile; bad=[n for n in zipfile.ZipFile(sys.argv[1]).namelist() if chr(92) in n]; sys.exit(f'zip has backslash paths: {bad[:3]}' if bad else 0)" $zip.FullName
+          python tools/pack_zip.py check $zip.FullName
+          if ($LASTEXITCODE) { throw "zip layout check failed" }
           Expand-Archive $zip.FullName -DestinationPath player
           $app = (Get-ChildItem player -Recurse -Filter TopSpin4Launcher.exe | Select-Object -First 1).DirectoryName
           foreach ($f in 'TopSpin4Launcher.exe', '_internal\xenia\xenia_edge.exe', 'licenses\XENIA_EDGE_LICENSE.txt', '_internal\assets\header.png') {
@@ -116,7 +117,7 @@ jobs:
 
       - name: Compile, self-test and dry run
         run: |
-          python3 -m py_compile topspin4_launcher.py tools/build_appimage.py tools/make_assets.py
+          python3 -m py_compile topspin4_launcher.py tools/build_appimage.py tools/make_assets.py tools/pack_zip.py
           python3 topspin4_launcher.py --version
           python3 topspin4_launcher.py --self-test
           touch "Top Spin 4.iso" xenia_edge_linux.appimage && chmod +x xenia_edge_linux.appimage
