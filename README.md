@@ -7,7 +7,7 @@
 **Play the Xbox 360 version of Top Spin 4 on PC: one download, with the emulator built in.**
 
 > [!WARNING]
-> **Early version (v1.0).** So far it has only been tested and confirmed working on **Linux**.
+> **Early version (v1.1).** So far it has only been tested and confirmed working on **Linux**.
 > The Windows build is compiled and smoke-tested automatically on GitHub Actions
 > (see [Windows smoke test](#windows-smoke-test)), but nobody has played on Windows yet.
 

@@ -22,7 +22,7 @@ body:
     id: version
     attributes:
       label: Launcher version
-      description: Shown in the launcher's title bar, e.g. 1.0
+      description: Shown in the launcher's title bar, e.g. 1.1
     validations:
       required: true
   - type: input

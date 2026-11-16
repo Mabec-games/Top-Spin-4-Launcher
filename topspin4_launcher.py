@@ -43,7 +43,7 @@ import threading
 import time
 import zlib
 
-VERSION = "1.0"
+VERSION = "1.1"
 
 
 def _app_dir():
