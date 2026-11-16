@@ -39,6 +39,7 @@ import signal
 import struct
 import subprocess
 import sys
+import threading
 import time
 import zlib
 
@@ -128,6 +129,7 @@ DEFAULTS = {
     "sanitize_profiles": True,
     "kill_stale": True,
     "hide_xenia_menu": True,
+    "menu_combo": True,           # controller Start+Back opens Xenia's menu
     "profile": PROFILE_AUTO,
     "gamertag": "",
     "audio": AUDIO_XMA_THREAD,
@@ -588,6 +590,232 @@ def build_command(s):
     return args
 
 
+# --------------------------------------------------------------------------
+# Controller Start+Back -> Xenia's menu
+# --------------------------------------------------------------------------
+# Xenia Edge opens its overlay menu on Escape (hard-coded) and on the Guide
+# button; it has no cvar for a button combo. While the game runs, a thread
+# reads the controllers (read-only: Xenia and the game still get every press)
+# and taps Escape when Start and Back are held together.
+BTN_SOUTH, BTN_SELECT, BTN_START = 0x130, 0x13A, 0x13B    # Linux evdev codes
+XINPUT_START, XINPUT_BACK = 0x0010, 0x0020
+COMBO_REPEAT_S = 0.5
+EVDEV_EVENT = struct.Struct("llHHi")                       # struct input_event
+
+
+class MenuCombo:
+    """Start+Back detector over several pads. Fires when the second button
+    goes down, and at most once per COMBO_REPEAT_S over all pads: with Steam
+    running, the physical pad and Steam's virtual copy report the same press,
+    and two Escapes would open and close the menu again."""
+
+    def __init__(self):
+        self.held = {}          # pad -> buttons held
+        self.last = None
+
+    def update(self, pad, button, down, now):
+        held = self.held.setdefault(pad, set())
+        if not down:
+            held.discard(button)
+            return False
+        if button in held:
+            return False
+        held.add(button)
+        if len(held) < 2 or (self.last is not None and now - self.last < COMBO_REPEAT_S):
+            return False
+        self.last = now
+        return True
+
+
+def _uinput_escape():
+    """Virtual keyboard with only Escape. Works on X11 and Wayland; needs
+    write access to /dev/uinput (systemd gives it to the seat user on most
+    desktops and SteamOS)."""
+    import fcntl
+    fd = os.open("/dev/uinput", os.O_WRONLY | os.O_NONBLOCK)
+    try:
+        fcntl.ioctl(fd, 0x40045564, 1)                 # UI_SET_EVBIT EV_KEY
+        fcntl.ioctl(fd, 0x40045565, 1)                 # UI_SET_KEYBIT KEY_ESC
+        fcntl.ioctl(fd, 0x405C5503, struct.pack(       # UI_DEV_SETUP
+            "HHHH80sI", 0x06, 0, 0, 1, b"Top Spin 4 Launcher menu key", 0))
+        fcntl.ioctl(fd, 0x5501)                        # UI_DEV_CREATE
+    except OSError:
+        os.close(fd)
+        raise
+
+    def send():
+        for value in (1, 0):
+            os.write(fd, EVDEV_EVENT.pack(0, 0, 1, 1, value) + EVDEV_EVENT.pack(0, 0, 0, 0, 0))
+            time.sleep(0.05)
+
+    def close():
+        try:
+            fcntl.ioctl(fd, 0x5502)                    # UI_DEV_DESTROY
+        finally:
+            os.close(fd)
+    return send, close
+
+
+def _xtest_escape():
+    """X11 fallback when /dev/uinput isn't writable (XTEST can't reach
+    native Wayland windows, so it's only used without Wayland)."""
+    import ctypes as C
+    import ctypes.util
+    if not os.environ.get("DISPLAY") or os.environ.get("WAYLAND_DISPLAY"):
+        raise OSError("not an X11 session")
+    x11 = C.CDLL(ctypes.util.find_library("X11") or "libX11.so.6")
+    xtst = C.CDLL(ctypes.util.find_library("Xtst") or "libXtst.so.6")
+    x11.XOpenDisplay.argtypes, x11.XOpenDisplay.restype = [C.c_char_p], C.c_void_p
+    x11.XKeysymToKeycode.argtypes, x11.XKeysymToKeycode.restype = [C.c_void_p, C.c_ulong], C.c_ubyte
+    x11.XFlush.argtypes = x11.XCloseDisplay.argtypes = [C.c_void_p]
+    xtst.XTestFakeKeyEvent.argtypes = [C.c_void_p, C.c_uint, C.c_int, C.c_ulong]
+    dpy = x11.XOpenDisplay(None)
+    if not dpy:
+        raise OSError("cannot open the X display")
+    key = x11.XKeysymToKeycode(dpy, 0xFF1B)            # XK_Escape
+
+    def send():
+        for down in (1, 0):
+            xtst.XTestFakeKeyEvent(dpy, key, down, 0)
+            x11.XFlush(dpy)
+            time.sleep(0.05)
+    return send, lambda: x11.XCloseDisplay(dpy)
+
+
+def _linux_pads(known):
+    """Open the event devices that look like gamepads and aren't open yet."""
+    import fcntl
+    found = {}
+    for path in glob.glob("/dev/input/event*"):
+        if path in known:
+            continue
+        try:
+            fd = os.open(path, os.O_RDONLY | os.O_NONBLOCK)
+        except OSError:
+            continue                                   # no access (keyboards etc.)
+        bits = bytearray(96)                           # KEY_MAX + 1 bits
+        try:
+            fcntl.ioctl(fd, 0x80604521, bits)          # EVIOCGBIT(EV_KEY, 96)
+        except OSError:
+            bits = bytearray(96)
+        if all(bits[c // 8] >> (c % 8) & 1 for c in (BTN_SOUTH, BTN_START, BTN_SELECT)):
+            found[path] = fd
+        else:
+            os.close(fd)
+    return found
+
+
+def _watch_linux(proc, combo, send):
+    import select
+    pads, next_scan = {}, 0.0
+    try:
+        while proc.poll() is None:
+            if time.monotonic() >= next_scan:          # pick up pads plugged in later
+                pads.update(_linux_pads(pads))
+                next_scan = time.monotonic() + 2
+            ready, _, _ = select.select(list(pads.values()), [], [], 0.25)
+            for path, fd in list(pads.items()):
+                if fd not in ready:
+                    continue
+                try:
+                    data = os.read(fd, EVDEV_EVENT.size * 64)
+                except BlockingIOError:
+                    continue
+                except OSError:                        # unplugged
+                    os.close(fd)
+                    del pads[path]
+                    combo.held.pop(path, None)
+                    continue
+                for i in range(0, len(data) - EVDEV_EVENT.size + 1, EVDEV_EVENT.size):
+                    _, _, typ, code, value = EVDEV_EVENT.unpack_from(data, i)
+                    if (typ == 1 and code in (BTN_START, BTN_SELECT)
+                            and combo.update(path, code, value != 0, time.monotonic())):
+                        send()
+    finally:
+        for fd in pads.values():
+            os.close(fd)
+
+
+def _windows_escape():
+    import ctypes as C
+    user32 = C.WinDLL("user32")
+
+    def send():
+        for flags in (0, 2):                           # key down, KEYEVENTF_KEYUP
+            user32.keybd_event(0x1B, 0x01, flags, 0)   # VK_ESCAPE, scan code 1
+            time.sleep(0.05)
+    return send, lambda: None
+
+
+def _watch_windows(proc, combo, send):
+    import ctypes as C
+
+    class Gamepad(C.Structure):
+        _fields_ = [("wButtons", C.c_ushort), ("bLeftTrigger", C.c_ubyte),
+                    ("bRightTrigger", C.c_ubyte), ("sThumbLX", C.c_short),
+                    ("sThumbLY", C.c_short), ("sThumbRX", C.c_short), ("sThumbRY", C.c_short)]
+
+    class State(C.Structure):
+        _fields_ = [("dwPacketNumber", C.c_ulong), ("Gamepad", Gamepad)]
+
+    xinput = None
+    for name in ("xinput1_4", "xinput9_1_0"):
+        try:
+            xinput = C.WinDLL(name)
+            break
+        except OSError:
+            pass
+    if xinput is None:
+        raise OSError("XInput is not available")
+    get_state = xinput.XInputGetState
+    get_state.argtypes, get_state.restype = [C.c_ulong, C.POINTER(State)], C.c_ulong
+    state, prev, retry = State(), [0] * 4, [0.0] * 4
+    while proc.poll() is None:
+        now = time.monotonic()
+        for slot in range(4):
+            if now < retry[slot]:
+                continue
+            if get_state(slot, C.byref(state)):        # not connected
+                # Polling empty slots is slow in XInput; check them every 2 s.
+                retry[slot], prev[slot] = now + 2, 0
+                combo.held.pop(slot, None)
+                continue
+            buttons = state.Gamepad.wButtons
+            for mask in (XINPUT_START, XINPUT_BACK):
+                if ((buttons ^ prev[slot]) & mask
+                        and combo.update(slot, mask, bool(buttons & mask), now)):
+                    send()
+            prev[slot] = buttons
+        time.sleep(0.03)
+
+
+def start_menu_combo(proc, log=print):
+    """Watch the controllers until proc exits; Start+Back taps Escape."""
+    def run():
+        close = None
+        try:
+            if IS_WINDOWS:
+                send, close = _windows_escape()
+                watch = _watch_windows
+            else:
+                try:
+                    send, close = _uinput_escape()
+                except OSError as e:
+                    try:
+                        send, close = _xtest_escape()
+                    except OSError:
+                        raise OSError(f"cannot send keys (/dev/uinput: {e.strerror or e})") from None
+                watch = _watch_linux
+            log("Controller: Start+Back opens Xenia's menu.")
+            watch(proc, MenuCombo(), send)
+        except Exception as e:  # noqa
+            log(f"Start+Back menu shortcut is off: {e}")
+        finally:
+            if close:
+                close()
+    threading.Thread(target=run, daemon=True, name="menu-combo").start()
+
+
 def launch(s, log=print, wait=False):
     if not s["emulator"] or not os.path.exists(s["emulator"]):
         raise FileNotFoundError(s["emulator_kind"] + " executable not found.")
@@ -615,11 +843,16 @@ def launch(s, log=print, wait=False):
     # same physical controller. Start then arrives from two slots, the game
     # signs the profile into the second one too and hangs. Steam sets this
     # hint itself for games it launches, so only fill it in when unset.
+    # Only SDL2 (Canary) needs it: Edge's SDL3 (3.4.8) already skips Steam's
+    # virtual pad unless SDL_GAMECONTROLLER_ALLOW_STEAM_VIRTUAL_GAMEPAD=1, and
+    # with that set it uses the pad even when this list names it.
     if "SDL_GAMECONTROLLER_IGNORE_DEVICES" not in env:
         env["SDL_GAMECONTROLLER_IGNORE_DEVICES"] = "0x28de/0x11ff"
     proc = subprocess.Popen(cmd, cwd=os.path.dirname(s["emulator"]), env=env,
                             stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
                             start_new_session=True)
+    if s.get("menu_combo") and emulator_kind(s["emulator"]) == EDGE:
+        start_menu_combo(proc, log)
     if wait:
         proc.wait()
     return proc
@@ -1199,6 +1432,8 @@ def run_gui():
                     variable=vars_["kill_stale"]).grid(row=1, column=0, columnspan=2, sticky="w", padx=14, pady=3)
     ttk.Checkbutton(a, text="Hide Xenia's overlay menu (Guide button / right-click); quit with Alt+F4",
                     variable=vars_["hide_xenia_menu"]).grid(row=4, column=0, columnspan=2, sticky="w", padx=14, pady=3)
+    ttk.Checkbutton(a, text="Controller Start+Back opens Xenia's menu, like Escape (Xenia Edge only)",
+                    variable=vars_["menu_combo"]).grid(row=3, column=0, columnspan=2, sticky="w", padx=14, pady=3)
     ttk.Checkbutton(a, text="Edge cooperative guest scheduler (Xenia Edge only)",
                     variable=vars_["guest_scheduler"]).grid(row=2, column=0, columnspan=2, sticky="w", padx=14, pady=3)
     row(a, 5, "Audio", ttk.Combobox(
@@ -1258,6 +1493,11 @@ def self_test(report=None):
     mac = lambda d: hmac.new(ACCOUNT_KEY, d, hashlib.sha1).digest()
     plain = _rc4(mac(raw[:16])[:16], raw[16:])
     assert len(raw) == 0x194 and mac(plain)[:16] == raw[:16], "Account encryption failed"
+    combo = MenuCombo()
+    presses = [combo.update(0, "start", True, 0), combo.update(0, "back", True, 0),
+               combo.update(1, "start", True, 0.1), combo.update(1, "back", True, 0.1),
+               combo.update(0, "back", False, 1), combo.update(0, "back", True, 1)]
+    assert presses == [False, True, False, False, False, True], "Start+Back combo failed"
     lines = [f"Top Spin 4 Launcher {VERSION} self-test OK",
              f"  python {platform.python_version()}, tk {tkinter.TkVersion}, app dir {APP_DIR}",
              f"  bundled xenia: {bundled_emulator() or 'no'}",

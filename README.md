@@ -66,7 +66,9 @@ Command line: `--play` starts the game directly with the saved settings (used by
 ## Known issues
 
 - **Escape opens Xenia's overlay menu.** This is hard-coded in Xenia Edge; press Escape again to close it.
-  (The Guide button and right-click menu are turned off by the launcher.)
+  On a controller, press **Start+Back** together (Menu+View on Steam Deck). The game also sees both
+  presses, so Start may open its pause menu underneath. (The Guide button and right-click menu are turned
+  off by the launcher; turn Start+Back off on the Advanced tab.)
 - After pressing Start, loading occasionally pauses for 10–30 seconds before it continues.
 - Online play used Xbox LIVE, which is shut down, and the game has no System Link mode. For 1v1 online,
   stream local multiplayer instead (Steam Remote Play Together, Parsec, or Sunshine + Moonlight).
